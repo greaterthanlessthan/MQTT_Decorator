@@ -14,7 +14,7 @@ class MQTTConnect(object):
     @MQTTConnect(subscriptions=["topic1", "topic2"], publications=["topic1", "topic3"])
     class my_class(obj)
 
-    is equivelenant to:
+    is equivalent to:
 
     class my_class(obj)
 
@@ -54,6 +54,7 @@ class MQTTConnect(object):
         # start client if it hasn't already been started
         self.start_client(message_func=self.on_message, broker_arg=broker, port=port)
 
+    # called when decorating a class
     def __call__(self, c):
         # set class attributes here
         c._broker = self._broker
@@ -83,17 +84,22 @@ class MQTTConnect(object):
 
             if o.subscriptions is not None:
                 for subscription in o.subscriptions:
+                    # subscribe to topics
                     result, mid = o._client.subscribe(subscription)
+
                     # check success
                     if result == 0:
+                        # on success, give object an attribute with name equal to subscription
                         setattr(o, subscription, None)
-                        self.note_subscribers(subscription, o)
+                        self.note_subscribers(subscription, o)  # add class to the global subscriber list
                     else:
+                        # warn that subscription wasn't successful
                         warnings.warn(f"Could not subscribe to {subscription}. Message ID: {mid}")
                         traceback.print_stack()
 
             if self.publications is not None:
                 for publication in o.publications:
+                    # not used at the moment
                     pass
 
             return o
@@ -105,13 +111,17 @@ class MQTTConnect(object):
         if globals().get('global_client') is None:
             import paho.mqtt.client as mqtt
             print("Creating new MQTT client")
+
             # global to ensure only one client is made
             global global_client
             global_client = mqtt.Client("global_client")
+
             # define on_message func
             global_client.on_message = message_func
 
             print(f"Connecting to broker {broker_arg} at port {port}")
+
+            # Todo: on_connect()
             global_client.connect(broker_arg, port=port)
             global_client.loop_start()
         else:
