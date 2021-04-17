@@ -1,33 +1,226 @@
 import time
 import warnings
 import traceback
+import paho.mqtt.client as mqtt
 
-warnings.simplefilter("always")
+warnings.simplefilter("always")  # Always show warnings
+
+GLOBAL_SUBSCRIBERS = {}
+
+
+def note_subscribers(topic, subscriber) -> None:
+    """
+    Appends to GLOBAL_SUBSCRIBERS
+
+    Objects will be added to that dictionary as keys. Their attributes will then be accessed dynamically by on_message
+
+    :param topic: The MQTT topic
+    :param subscriber: The class object that will receive updates when that topic is updated
+    :return: None
+    """
+    try:
+        subscriber.__dict__[topic]
+    except KeyError:  # object was not given subscription
+        warnings.warn(f"Wrong object sent to note_subscribers. "
+                      f"Got {subscriber} which does not {topic} as an attribute"
+                      f"which should be set in MQTTConnect")
+    except AttributeError:  # object does not have __dict__ method
+        warnings.warn(f"It looks like the wrong object was sent to note_subscribers. "
+                      f"Got {subscriber} which does not have a __dict__ attribute, so it wasn't even a class instance")
+    else:
+        # create instance as a key, and note that it's subscribed to subscription
+        GLOBAL_SUBSCRIBERS[subscriber] = topic
+        print(f"Added {type(subscriber).__name__} to global_subscribers as subscribing to {topic}")
+
+
+def on_message(client, userdata, message) -> None:
+    """
+    Dynamically sets values and calls methods of class decorated with MQTTConnect
+
+    :param client:
+    :param userdata:
+    :param message:
+    :return:
+    """
+    print("message received ", str(message.payload.decode("utf-8")))
+    # print("message topic=", message.topic)
+    # print("message qos=", message.qos)
+    # print("message retain flag=", message.retain)
+    # set the attribute of each subscriber that's subscribed to the topic
+    for subscriber, topic in GLOBAL_SUBSCRIBERS.items():
+        if topic == message.topic:
+            # set the value of the subscriber's attribute in the SubscribedTopic subclass
+            setattr(topic_subclass := subscriber.__dict__[topic], "_value", str(message.payload.decode("utf-8")))
+
+            # call the method of that object
+            try:
+                topic_subclass.called_from_on_message()
+            except AttributeError:
+                warnings.warn(f"{subscriber}.{topic} "
+                              f"didn't have a .called_from_on_message method. "
+                              f"Is it not an instance of SubscribedTopic?")
+
+
+def on_connect(client, userdata, flags, rc):
+    print(f"Connected with result code {rc}")
+
+    # Subscribing in on_connect() means that if we lose the connection and
+    # reconnect then subscriptions will be renewed.
+    # client.subscribe("$SYS/#")
+
+
+def start_client(message_func=on_message, connect_func=on_connect, broker_arg="127.0.0.1", port=1883) -> mqtt.Client:
+    """
+
+    :param connect_func:
+    :param message_func: the function to call when message is received
+    :param broker_arg:
+    :param port:
+    :return:
+    """
+    # Todo: other features of paho.mqtt.client e.g.on_connect, security password
+    # start if it hasn't been done yet
+    print("Creating new MQTT client")
+    print(f"Connecting to broker {broker_arg} at port {port}")
+
+    # time.time() for unique client name
+    client_name = str(time.time())
+    client = mqtt.Client(client_name)
+
+    # define message and connect functions
+    client.on_message, client.on_connect = message_func, connect_func
+
+    client.connect(broker_arg, port=port)
+    client.loop_start()
+
+    return client
+
+
+def is_float(value_arg):
+    try:
+        float(value_arg)
+        return True
+    except ValueError:
+        return False
+
+
+class TopicHandler:
+    """
+    Class for handling topics
+    """
+
+    _value = "not set"  # the value of the topic
+    _parent = None  # The parent class, used for warnings
+
+    # whether or not this can publish, whether or not the instance is a subscriber. Will be set in MQTTConnect
+    _can_publish = _is_subscribed = False
+
+    # last subscription and publication message time in seconds
+    last_message_time = last_publish_time = 0.0
+
+    def __init__(self, topic_string):
+        self._topic = str(topic_string)
+
+    def __str__(self):
+        return self._value
+
+    def __repr__(self):
+        pub_string = "publishing" if self._can_publish else ""
+        sub_string = "subscribing" if self._is_subscribed else ""
+        and_string = " and " if sub_string != "" and pub_string != "" else ""
+
+        return f"The subscription subclass for {self._parent} handling topic {self._topic}, it is " \
+               f"{sub_string}{and_string}{pub_string} to that topic"
+
+    """
+    Define comparison dunder methods
+    """
+    def __eq__(self, other):
+        return float(self._value) == other if is_float(self._value) else self._value == str(other)
+
+    def __lt__(self, other):
+        return float(self._value) < other if is_float(self._value) else self._value < str(other)
+
+    def __le__(self, other):
+        return float(self._value) <= other if is_float(self._value) else self._value <= str(other)
+
+    def __gt__(self, other):
+        return float(self._value) > other if is_float(self._value) else self._value > str(other)
+
+    def __ge__(self, other):
+        return float(self._value) >= other if is_float(self._value) else self._value >= str(other)
+
+    def __ne__(self, other):
+        return float(self._value) != other if is_float(self._value) else self._value != str(other)
+
+    def __hash__(self):  # good practice when defining __eq__
+        return hash(self._value)
+
+    """
+    Value property
+    """
+
+    @property
+    def value(self):
+        return self._value
+
+    @value.setter
+    def value(self, value_arg):
+        if self.publish(value_arg) == 0:
+            self._value = value_arg
+            self.last_publish_time = time.time()
+
+    @value.getter
+    def value(self):
+        return self._value
+
+    def called_from_on_message(self):
+        # Todo: history into a database
+        self.on_change()
+        self.last_message_time = time.time()
+
+    def on_change(self):
+        # message for on_change method that was not redefined
+        print(f"{self._topic} was updated, received {self._value} and not doing anything,\n"
+              f"redefine {self._parent}.{self._topic}.on_change with a function that takes no arguments.\n"
+              f"You may also want to define other attributes from the SubscribedTopic class.")
+
+    def publish(self, payload=None, qos=0, retain=False):
+        if not self._can_publish:
+            warnings.warn(f"{repr(self)} doesn't have permission to publish to topic {self._topic}.")
+        else:
+            result, mid = GLOBAL_CLIENT.publish(topic=self._topic, payload=payload, qos=qos, retain=retain)
+            if result != mqtt.MQTT_ERR_SUCCESS:
+                warnings.warn(f"Publish message {mid} failed. Error code {result}. Tried to publish "
+                              f"{payload} to {self._topic}.")
+            return result
 
 
 class MQTTConnect(object):
-    """
-    Must be used as decorator with arguments. Intended for use on classes.
+    def __init__(self, subscriptions=None, publications=None):
+        """
+        Must be used as decorator with arguments. Intended for use on classes.
 
-    syntax:
+        Sets class attributes to decorated object:
+            .publications, .subscriptions as a list of the arguments received
+            .<subscription> for each string in subscriptions argument, which will automatically update when a message
+                is received
 
-    @MQTTConnect(subscriptions=["topic1", "topic2"], publications=["topic1", "topic3"])
-    class my_class(obj)
+            .publish method which publishes a topic if it is set as a topic. Otherwise warns.
 
-    is equivalent to:
+        syntax:
 
-    class my_class(obj)
+        @MQTTConnect(subscriptions=["topic1", "topic2"], publications=["topic1", "topic3"])
+        class my_class(obj)
 
-    my_class = MQTTConnect(subscriptions=["topic1", "topic2"], publications=["topic1", "topic3"])(my_class)
-    """
-
-    # called when arguments are passed. This class doesn't work without arguments
-    def __init__(self, subscriptions=None, publications=None, broker="127.0.0.1", port=1883):
+        :param subscriptions: the topics to subscribe to
+        :param publications: the topics the object is allowed to publish to
+        """
         # check if subscriptions is what we want
         try:
             if subscriptions is not None:
                 iter(subscriptions)  # check if iterable if not default
-        except TypeError as e:
+        except TypeError:
             raise UserWarning(f"Iterable was not sent to MQTTConnect subscriptions. Got {subscriptions}")
         else:
             if type(subscriptions) == str:
@@ -39,7 +232,7 @@ class MQTTConnect(object):
         try:
             if publications is not None:
                 iter(publications)  # check if iterable if not default
-        except TypeError as e:
+        except TypeError:
             raise UserWarning(f"Iterable was not sent to MQTTConnect publications. Got {publications}")
         else:
             if type(publications) == str:
@@ -47,120 +240,94 @@ class MQTTConnect(object):
             else:
                 self.publications = publications  # final result: an iterable not including a string, or None
 
-        # save these arguments in instance
-        self._broker = broker
-        self._port = port
-
-        # start client if it hasn't already been started
-        self.start_client(message_func=self.on_message, broker_arg=broker, port=port)
-
     # called when decorating a class
     def __call__(self, c):
         # set class attributes here
-        c._broker = self._broker
-        c._port = self._port
 
         # set classes subscriptions and publications
-        c.subscriptions = self.subscriptions
-        c.publications = self.publications
+        c.subscriptions, c.publications = self.subscriptions, self.publications
 
-        # create class publish method
-        def publish(c_self, topic, payload=None, qos=0, retain=False):
-            if topic not in c.publications:
-                warnings.warn(f"{c} doesn't have permission to publish to topic {topic}.")
-                traceback.print_stack()
-            else:
-                global_client.publish(topic=topic, payload=payload, qos=qos, retain=retain)
+        # create better string representation
+        def good_repr(c_self):
+            return f"{type(c_self).__name__} object  which subscribes to " \
+                   f"{c_self.subscriptions} and publishes to {c_self.publications}"
 
-        setattr(c, "publish", publish)
+        def good_str(c_self):
+            return f"{type(c_self).__name__}"
+
+        c.__repr__, c.__str__ = good_repr, good_str
 
         def wrapper(*args, **kwargs):
             # create object
             o = c(*args, **kwargs)
 
-            # set object attributes here
-            # send object a reference to the running client
-            o._client = global_client
-
+            # set object attributes
             if o.subscriptions is not None:
                 for subscription in o.subscriptions:
                     # subscribe to topics
-                    result, mid = o._client.subscribe(subscription)
+                    result, mid = GLOBAL_CLIENT.subscribe(subscription)
+
+                    # make topic instance
+                    t = TopicHandler(subscription)
+                    setattr(t, "_parent", str(o))
+                    setattr(t, "_is_subscribed", True)
+
+                    # give object an attribute with name equal to subscription
+                    setattr(o, subscription, t)
 
                     # check success
-                    if result == 0:
-                        # on success, give object an attribute with name equal to subscription
-                        setattr(o, subscription, None)
-                        self.note_subscribers(subscription, o)  # add class to the global subscriber list
-                    else:
+                    if result != mqtt.MQTT_ERR_SUCCESS:
                         # warn that subscription wasn't successful
-                        warnings.warn(f"Could not subscribe to {subscription}. Message ID: {mid}")
-                        traceback.print_stack()
+                        warnings.warn(f"Could not subscribe to {subscription}. Message ID: {mid}. Error code {result}")
+                    else:
+                        # add class to the global subscriber list on success
+                        note_subscribers(subscription, o)
 
             if self.publications is not None:
                 for publication in o.publications:
-                    # not used at the moment
-                    pass
+                    # don't make a TopicHandler instance if it was already done
+                    if publication in o.subscriptions:
+                        existing_topic_handler = o.__dict__[publication]
+                        setattr(existing_topic_handler, "_can_publish", True)
+                    else:
+                        # make topic instance
+                        t = TopicHandler(publication)
+                        setattr(t, "_parent", str(o))
+                        setattr(t, "_can_publish", True)
 
+                        # give object an attribute with name equal to subscription
+                        setattr(o, publication, t)
             return o
         return wrapper
-
-    @staticmethod
-    def start_client(message_func, broker_arg, port):
-        # create global_client if it hasn't been made yet
-        if globals().get('global_client') is None:
-            import paho.mqtt.client as mqtt
-            print("Creating new MQTT client")
-
-            # global to ensure only one client is made
-            global global_client
-            global_client = mqtt.Client("global_client")
-
-            # define on_message func
-            global_client.on_message = message_func
-
-            print(f"Connecting to broker {broker_arg} at port {port}")
-
-            # Todo: on_connect()
-            global_client.connect(broker_arg, port=port)
-            global_client.loop_start()
-        else:
-            pass
-
-    @staticmethod
-    def on_message(client, userdata, message):
-        print("message received ", str(message.payload.decode("utf-8")))
-        print("message topic=", message.topic)
-        print("message qos=", message.qos)
-        print("message retain flag=", message.retain)
-        # set the attribute of each subscriber that's subscribed to the topic
-        for subscriber, topic in global_subscribers.items():
-            if topic == message.topic:
-                setattr(subscriber, topic, str(message.payload.decode("utf-8")))
-
-    @staticmethod
-    def note_subscribers(subscription, obj):
-        if globals().get('global_subscribers') is None:
-            print("Creating dict of subscribers")
-            global global_subscribers
-            global_subscribers = {}
-        # create instance as a key, and note that it's subscribed to subscription
-        global_subscribers[obj] = subscription
-        print(f"Added {obj} to global_subscribers as subscribing to {subscription}")
 
 
 @MQTTConnect(subscriptions="TEMPERATURE", publications="TEMPERATURE")
 class TemperatureWatcher(object):
+    # these help with type completion and were added by MQTTConnect
+    TEMPERATURE: TopicHandler
+    publications: list
+    subscriptions: list
+
     def __init__(self):
         pass
 
-    def clear(self, topic):
-        self.publish(topic, 0)
+    def set_on_change(self):
+        self.TEMPERATURE.on_change = self.hooray
+
+    def hooray(self):
+        print(f"Hooray! TEMPERATURE was updated to {self.TEMPERATURE}. ")
+
+
+# begin client
+GLOBAL_CLIENT = start_client(message_func=on_message, broker_arg="127.0.0.1", port=1883)
 
 
 cloo = TemperatureWatcher()
+cloo.set_on_change()
 
 while True:
     time.sleep(1)
-    print(cloo.TEMPERATURE)
-    cloo.publish("TEMPERATURE", "99")
+    cloo.TEMPERATURE.value = 46
+    x = cloo.TEMPERATURE.value
+    print(x)
+    print(cloo.TEMPERATURE > 91)
