@@ -297,6 +297,13 @@ class MQTTConnect(object):
 
                         # give object an attribute with name equal to subscription
                         setattr(o, publication, t)
+
+            # standard method name for connecting on_change methods
+            try:
+                o.set_on_change()
+            except AttributeError:
+                pass
+
             return o
         return wrapper
 
@@ -323,7 +330,6 @@ GLOBAL_CLIENT = start_client(message_func=on_message, broker_arg="127.0.0.1", po
 
 
 cloo = TemperatureWatcher()
-cloo.set_on_change()
 
 while True:
     time.sleep(1)
