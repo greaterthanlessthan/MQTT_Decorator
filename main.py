@@ -1,6 +1,6 @@
 import time
 import warnings
-import traceback
+# import traceback
 import paho.mqtt.client as mqtt
 
 warnings.simplefilter("always")  # Always show warnings
@@ -129,8 +129,8 @@ class TopicHandler:
         sub_string = "subscribing" if self._is_subscribed else ""
         and_string = " and " if sub_string != "" and pub_string != "" else ""
 
-        return f"The subscription subclass for {self._parent} handling topic {self._topic}, it is " \
-               f"{sub_string}{and_string}{pub_string} to that topic"
+        return f"The subscription subclass for {self._parent}," \
+               f" {sub_string}{and_string}{pub_string} to topic {self._topic}"
 
     """
     Define comparison dunder methods
@@ -308,21 +308,27 @@ class MQTTConnect(object):
         return wrapper
 
 
-@MQTTConnect(subscriptions="TEMPERATURE", publications="TEMPERATURE")
+@MQTTConnect(subscriptions="TEMPERATURE", publications=["TEMPERATURE", "AIR_COND"])
 class TemperatureWatcher(object):
     # these help with type completion and were added by MQTTConnect
     TEMPERATURE: TopicHandler
+    AIR_COND: TopicHandler
     publications: list
     subscriptions: list
 
     def __init__(self):
         pass
 
+    # this method name is called by MQTTConnect at the end of instantiation, but it doesn't need to be used
     def set_on_change(self):
         self.TEMPERATURE.on_change = self.hooray
 
     def hooray(self):
         print(f"Hooray! TEMPERATURE was updated to {self.TEMPERATURE}. ")
+        if self.TEMPERATURE > 72:
+            self.AIR_COND.value = "ON"
+        else:
+            self.AIR_COND.value = "OFF"
 
 
 # begin client
@@ -331,9 +337,9 @@ GLOBAL_CLIENT = start_client(message_func=on_message, broker_arg="127.0.0.1", po
 
 cloo = TemperatureWatcher()
 
+test_val = 60
 while True:
     time.sleep(1)
-    cloo.TEMPERATURE.value = 46
-    x = cloo.TEMPERATURE.value
-    print(x)
-    print(cloo.TEMPERATURE > 91)
+    cloo.TEMPERATURE.value = test_val
+    test_val += 6
+    print(cloo.TEMPERATURE > 72)
