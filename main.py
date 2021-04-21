@@ -159,6 +159,11 @@ class TopicHandler:
     """
     Value property
     """
+    # this doesn't work. o.TopicHandlerInstance just gets set to the value
+    # def __set__(self, instance, value_arg):
+    #     if self.publish(value_arg) == 0:
+    #         self._value = value_arg
+    #         self.last_publish_time = time.time()
 
     @property
     def value(self):
@@ -268,12 +273,16 @@ class MQTTConnect(object):
                     result, mid = GLOBAL_CLIENT.subscribe(subscription)
 
                     # make topic instance
-                    t = TopicHandler(subscription)
-                    setattr(t, "_parent", str(o))
-                    setattr(t, "_is_subscribed", True)
+                    var_name = subscription.replace("/", "_")
+                    try:
+                        t = TopicHandler(subscription)
+                        setattr(t, "_parent", str(o))
+                        setattr(t, "_is_subscribed", True)
 
-                    # give object an attribute with name equal to subscription
-                    setattr(o, subscription, t)
+                        # give object an attribute with name equal to subscription
+                        setattr(o, var_name, t)
+                    except SyntaxError:
+                        warnings.warn(f"{var_name} is not a valid variable name.")
 
                     # check success
                     if result != mqtt.MQTT_ERR_SUCCESS:
@@ -285,9 +294,10 @@ class MQTTConnect(object):
 
             if self.publications is not None:
                 for publication in o.publications:
+                    var_name = publication.replace("/", "_")
                     # don't make a TopicHandler instance if it was already done
                     if publication in o.subscriptions:
-                        existing_topic_handler = o.__dict__[publication]
+                        existing_topic_handler = o.__dict__[var_name]
                         setattr(existing_topic_handler, "_can_publish", True)
                     else:
                         # make topic instance
@@ -296,11 +306,11 @@ class MQTTConnect(object):
                         setattr(t, "_can_publish", True)
 
                         # give object an attribute with name equal to subscription
-                        setattr(o, publication, t)
+                        setattr(o, var_name, t)
 
-            # standard method name for connecting on_change methods
+            # standard method name
             try:
-                o.set_on_change()
+                o.on_decorate()
             except AttributeError:
                 pass
 
@@ -308,34 +318,35 @@ class MQTTConnect(object):
         return wrapper
 
 
-@MQTTConnect(subscriptions="TEMPERATURE", publications=["TEMPERATURE", "AIR_COND"])
+@MQTTConnect(subscriptions="TEMPERATURE", publications=["TEMPERATURE", "AIR_COND/SOUTH"])
 class TemperatureWatcher(object):
-    # these help with type completion and were added by MQTTConnect
+    # these help with type completion and will be added by MQTTConnect
     TEMPERATURE: TopicHandler
-    AIR_COND: TopicHandler
+    AIR_COND_SOUTH: TopicHandler  # slashes are replaced with _
     publications: list
     subscriptions: list
 
-    def __init__(self):
-        pass
+    def __init__(self, hold_temp):
+        self.hold_temp = hold_temp
 
     # this method name is called by MQTTConnect at the end of instantiation, but it doesn't need to be used
-    def set_on_change(self):
+    # it's useful for accessing new methods which weren't available when __init__ was called
+    def on_decorate(self):
         self.TEMPERATURE.on_change = self.hooray
 
     def hooray(self):
-        print(f"Hooray! TEMPERATURE was updated to {self.TEMPERATURE}. ")
-        if self.TEMPERATURE > 72:
-            self.AIR_COND.value = "ON"
+        print(f"Hooray! TEMPERATURE was updated to {self.TEMPERATURE}.")
+        if self.TEMPERATURE > self.hold_temp:
+            self.AIR_COND_SOUTH.value = "ON"
         else:
-            self.AIR_COND.value = "OFF"
+            self.AIR_COND_SOUTH.value = "OFF"
 
 
 # begin client
-GLOBAL_CLIENT = start_client(message_func=on_message, broker_arg="127.0.0.1", port=1883)
+GLOBAL_CLIENT = start_client(message_func=on_message, broker_arg="192.168.0.28", port=1883)
 
 
-cloo = TemperatureWatcher()
+cloo = TemperatureWatcher(72)
 
 test_val = 60
 while True:
