@@ -370,7 +370,7 @@ cloo = TemperatureWatcher(72)
 test_val = 60
 while True:
     time.sleep(1)
-    cloo.TEMPERATURE.value = test_val
+    cloo.TEMPERATURE = test_val
     test_val += 6
     print(cloo.AIR_COND_SOUTH)
     print(repr(cloo))
