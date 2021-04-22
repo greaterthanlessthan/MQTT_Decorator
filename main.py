@@ -252,15 +252,32 @@ class MQTTConnect(object):
         # set classes subscriptions and publications
         c.subscriptions, c.publications = self.subscriptions, self.publications
 
-        # create better string representation
-        def good_repr(c_self):
-            return f"{type(c_self).__name__} object  which subscribes to " \
-                   f"{c_self.subscriptions} and publishes to {c_self.publications}"
-
-        def good_str(c_self):
+        def better_str(c_self):
             return f"{type(c_self).__name__}"
 
-        c.__repr__, c.__str__ = good_repr, good_str
+        c.__str__ = better_str
+
+        # create better dunder methods
+        # create better string representation
+        def better_repr(c_self):
+            return f"This is an instance of {type(c_self).__name__}, which was decorated like so:" \
+                   f"\n\n" \
+                   f"@MQTTConnect(subscriptions={c.subscriptions}, publications={c.publications})\n" \
+                   f"class {type(c_self).__name__}({c_self.__class__.__bases__[0].__name__}):"
+
+        c.__repr__ = better_repr
+
+        def setattr_to_publish(c_self, name, value):
+            if name in c_self.__dict__:  # if there's no attribute of this name, set it like normal
+                if type(c_self.__dict__[name]) == TopicHandler:  # but if there is, see if it's a TopicHandler
+                    c_self.__dict__[name].value = value  # if it is instead of overwriting it, call .value
+                    # which will try to publish the message, allowing for easy syntax of "class.Handler = value"
+                else:
+                    super(c, c_self).__setattr__(name, value)  # if it's not, set it like normal
+            else:
+                super(c, c_self).__setattr__(name, value)
+
+        c.__setattr__ = setattr_to_publish
 
         def wrapper(*args, **kwargs):
             # create object
@@ -337,9 +354,11 @@ class TemperatureWatcher(object):
     def hooray(self):
         print(f"Hooray! TEMPERATURE was updated to {self.TEMPERATURE}.")
         if self.TEMPERATURE > self.hold_temp:
-            self.AIR_COND_SOUTH.value = "ON"
+            # TemperatureWatcher's __setattr__ method has been modified, so instead of overwriting methods of type
+            # TopicHandler, it instead calls self.TopicHandler.value
+            self.AIR_COND_SOUTH = "ON"
         else:
-            self.AIR_COND_SOUTH.value = "OFF"
+            self.AIR_COND_SOUTH = "OFF"
 
 
 # begin client
@@ -353,4 +372,5 @@ while True:
     time.sleep(1)
     cloo.TEMPERATURE.value = test_val
     test_val += 6
-    print(cloo.TEMPERATURE > 72)
+    print(cloo.AIR_COND_SOUTH)
+    print(repr(cloo))
