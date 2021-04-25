@@ -2,13 +2,15 @@ import time
 import warnings
 # import traceback
 import paho.mqtt.client as mqtt
+from typing import Union
+# import logging
 
 warnings.simplefilter("always")  # Always show warnings
 
 GLOBAL_SUBSCRIBERS = {}
 
 
-def note_subscribers(topic, subscriber) -> None:
+def note_subscribers(topic: str, subscriber: object) -> None:
     """
     Appends to GLOBAL_SUBSCRIBERS
 
@@ -22,11 +24,13 @@ def note_subscribers(topic, subscriber) -> None:
         subscriber.__dict__[topic]
     except KeyError:  # object was not given subscription
         warnings.warn(f"Wrong object sent to note_subscribers. "
-                      f"Got {subscriber} which does not {topic} as an attribute"
+                      f"Got {subscriber} which does not have {topic} as an attribute"
                       f"which should be set in MQTTConnect")
+        raise
     except AttributeError:  # object does not have __dict__ method
         warnings.warn(f"It looks like the wrong object was sent to note_subscribers. "
                       f"Got {subscriber} which does not have a __dict__ attribute, so it wasn't even a class instance")
+        raise
     else:
         # create instance as a key, and note that it's subscribed to subscription
         GLOBAL_SUBSCRIBERS[subscriber] = topic
@@ -50,6 +54,7 @@ def on_message(client, userdata, message) -> None:
     for subscriber, topic in GLOBAL_SUBSCRIBERS.items():
         if topic == message.topic:
             # set the value of the subscriber's attribute in the SubscribedTopic subclass
+            # set _value as setting value will attempt to publish
             setattr(topic_subclass := subscriber.__dict__[topic], "_value", str(message.payload.decode("utf-8")))
 
             # call the method of that object
@@ -96,15 +101,14 @@ def start_client(message_func=on_message, connect_func=on_connect, broker_arg="1
     return client
 
 
-def is_float(value_arg):
+def safe_float(value_arg):
     try:
-        float(value_arg)
-        return True
+        return float(value_arg)
     except ValueError:
-        return False
+        return value_arg
 
 
-class TopicHandler:
+class TopicHandler(object):
     """
     Class for handling topics
     """
@@ -136,35 +140,29 @@ class TopicHandler:
     Define comparison dunder methods
     """
     def __eq__(self, other):
-        return float(self._value) == other if is_float(self._value) else self._value == str(other)
+        return self.as_float == other
 
     def __lt__(self, other):
-        return float(self._value) < other if is_float(self._value) else self._value < str(other)
+        return self.as_float < other
 
     def __le__(self, other):
-        return float(self._value) <= other if is_float(self._value) else self._value <= str(other)
+        return self.as_float <= other
 
     def __gt__(self, other):
-        return float(self._value) > other if is_float(self._value) else self._value > str(other)
+        return self.as_float > other
 
     def __ge__(self, other):
-        return float(self._value) >= other if is_float(self._value) else self._value >= str(other)
+        return self.as_float >= other
 
     def __ne__(self, other):
-        return float(self._value) != other if is_float(self._value) else self._value != str(other)
+        return self.as_float != other
 
     def __hash__(self):  # good practice when defining __eq__
-        return hash(self._value)
+        return hash(self.as_float)
 
     """
     Value property
     """
-    # this doesn't work. o.TopicHandlerInstance just gets set to the value
-    # def __set__(self, instance, value_arg):
-    #     if self.publish(value_arg) == 0:
-    #         self._value = value_arg
-    #         self.last_publish_time = time.time()
-
     @property
     def value(self):
         return self._value
@@ -179,16 +177,23 @@ class TopicHandler:
     def value(self):
         return self._value
 
+    @property
+    def as_float(self):
+        return safe_float(self._value)
+
+    @as_float.getter
+    def as_float(self):
+        return safe_float(self._value)
+
     def called_from_on_message(self):
-        # Todo: history into a database
         self.on_change()
         self.last_message_time = time.time()
 
     def on_change(self):
         # message for on_change method that was not redefined
-        print(f"{self._topic} was updated, received {self._value} and not doing anything,\n"
-              f"redefine {self._parent}.{self._topic}.on_change with a function that takes no arguments.\n"
-              f"You may also want to define other attributes from the SubscribedTopic class.")
+        warnings.warn(f"{self._topic} was updated, received {self._value} and not doing anything,\n"
+                      f"redefine {self._parent}.{self._topic}.on_change with a function that takes no arguments.\n"
+                      f"You may also want to define other attributes from the SubscribedTopic class.")
 
     def publish(self, payload=None, qos=0, retain=False):
         if not self._can_publish:
@@ -202,7 +207,7 @@ class TopicHandler:
 
 
 class MQTTConnect(object):
-    def __init__(self, subscriptions=None, publications=None):
+    def __init__(self, subscriptions=None, publications=None, change_repr=True):
         """
         Must be used as decorator with arguments. Intended for use on classes.
 
@@ -220,13 +225,15 @@ class MQTTConnect(object):
 
         :param subscriptions: the topics to subscribe to
         :param publications: the topics the object is allowed to publish to
+        :param change_repr: normally True, set to False to prevent setting custom __repr__
         """
         # check if subscriptions is what we want
         try:
             if subscriptions is not None:
                 iter(subscriptions)  # check if iterable if not default
         except TypeError:
-            raise UserWarning(f"Iterable was not sent to MQTTConnect subscriptions. Got {subscriptions}")
+            warnings.warn(f"Iterable was not sent to MQTTConnect subscriptions. Got {subscriptions}")
+            raise
         else:
             if type(subscriptions) == str:
                 self.subscriptions = [subscriptions]  # handle instance of lone string
@@ -238,12 +245,16 @@ class MQTTConnect(object):
             if publications is not None:
                 iter(publications)  # check if iterable if not default
         except TypeError:
-            raise UserWarning(f"Iterable was not sent to MQTTConnect publications. Got {publications}")
+            warnings.warn(f"Iterable was not sent to MQTTConnect publications. Got {publications}")
+            raise
         else:
             if type(publications) == str:
                 self.publications = [publications]  # handle instance of lone string
             else:
                 self.publications = publications  # final result: an iterable not including a string, or None
+
+        assert type(change_repr) == bool
+        self.change_repr = change_repr
 
     # called when decorating a class
     def __call__(self, c):
@@ -252,34 +263,36 @@ class MQTTConnect(object):
         # set classes subscriptions and publications
         c.subscriptions, c.publications = self.subscriptions, self.publications
 
-        def better_str(c_self):
-            return f"{type(c_self).__name__}"
-
-        c.__str__ = better_str
-
-        # create better dunder methods
-        # create better string representation
-        def better_repr(c_self):
-            return f"This is an instance of {type(c_self).__name__}, which was decorated like so:" \
-                   f"\n\n" \
-                   f"@MQTTConnect(subscriptions={c.subscriptions}, publications={c.publications})\n" \
-                   f"class {type(c_self).__name__}({c_self.__class__.__bases__[0].__name__}):"
-
-        c.__repr__ = better_repr
+        old_setattr = c.__setattr__
 
         def setattr_to_publish(c_self, name, value):
             if name in c_self.__dict__:  # if there's no attribute of this name, set it like normal
                 if type(c_self.__dict__[name]) == TopicHandler:  # but if there is, see if it's a TopicHandler
-                    c_self.__dict__[name].value = value  # if it is instead of overwriting it, call .value
+                    c_self.__dict__[name].value = value  # if it is, instead of overwriting it, call .value
                     # which will try to publish the message, allowing for easy syntax of "class.Handler = value"
                 else:
-                    super(c, c_self).__setattr__(name, value)  # if it's not, set it like normal
+                    old_setattr(c_self, name, value)  # if it's not, set it like normal
             else:
-                super(c, c_self).__setattr__(name, value)
+                old_setattr(c_self, name, value)
 
         c.__setattr__ = setattr_to_publish
 
         def wrapper(*args, **kwargs):
+
+            # create better dunder methods
+            # create better string representation
+            def better_repr(c_self):
+                return f"This is an instance of {type(c_self).__name__}, which was decorated like so:" \
+                       f"\n\n" \
+                       f"@MQTTConnect(subscriptions={c.subscriptions}, publications={c.publications})\n" \
+                       f"class {type(c_self).__name__}({c_self.__class__.__bases__[0].__name__}):\n" \
+                       f"   ..." \
+                       f"\n\n" \
+                       f"It was initialized with {type(c_self).__name__}({args, kwargs})"
+
+            if self.change_repr:
+                c.__repr__ = better_repr
+
             # create object
             o = c(*args, **kwargs)
 
@@ -293,7 +306,7 @@ class MQTTConnect(object):
                     var_name = subscription.replace("/", "_")
                     try:
                         t = TopicHandler(subscription)
-                        setattr(t, "_parent", str(o))
+                        setattr(t, "_parent", type(o).__name__)
                         setattr(t, "_is_subscribed", True)
 
                         # give object an attribute with name equal to subscription
@@ -335,11 +348,14 @@ class MQTTConnect(object):
         return wrapper
 
 
-@MQTTConnect(subscriptions="TEMPERATURE", publications=["TEMPERATURE", "AIR_COND/SOUTH"])
+@MQTTConnect(subscriptions=["TEMPERATURE", "NUM_PRESS"], publications=["TEMPERATURE", "AIR_COND/SOUTH"])
 class TemperatureWatcher(object):
-    # these help with type completion and will be added by MQTTConnect
-    TEMPERATURE: TopicHandler
-    AIR_COND_SOUTH: TopicHandler  # slashes are replaced with _
+    # these help with type completion, and these methods will be added by MQTTConnect
+    # Union type hint helps with the expected value that will be sent to or received from the MQTT broker
+    TEMPERATURE: Union[TopicHandler, int]
+    AIR_COND_SOUTH: Union[TopicHandler, str]  # slashes are replaced with _
+    NUM_PRESS: Union[TopicHandler, float]
+
     publications: list
     subscriptions: list
 
@@ -356,6 +372,8 @@ class TemperatureWatcher(object):
         if self.TEMPERATURE > self.hold_temp:
             # TemperatureWatcher's __setattr__ method has been modified, so instead of overwriting methods of type
             # TopicHandler, it instead calls self.TopicHandler.value
+            # PyCharm/other IDEs will warn about this since type was hinted earlier and it probably won't see the
+            # modification to __setattr__. That warning was suppressed with the Union hint
             self.AIR_COND_SOUTH = "ON"
         else:
             self.AIR_COND_SOUTH = "OFF"
@@ -372,5 +390,7 @@ while True:
     time.sleep(1)
     cloo.TEMPERATURE = test_val
     test_val += 6
-    print(cloo.AIR_COND_SOUTH)
-    print(repr(cloo))
+    # cloo._topic_qos0 = 60
+    print(cloo.TEMPERATURE > 80)
+    print(cloo.NUM_PRESS)
+    # print(repr(cloo))
