@@ -9,6 +9,7 @@ warnings.simplefilter("always")  # Always show warnings
 
 GLOBAL_SUBSCRIBERS = {}
 
+test: int
 
 def note_subscribers(topic: str, subscriber: object) -> None:
     """
