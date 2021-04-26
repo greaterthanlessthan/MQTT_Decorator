@@ -21,7 +21,7 @@ def note_subscribers(topic: str, subscriber: object) -> None:
     :return: None
     """
     try:
-        subscriber.__dict__[topic]
+        assert type(subscriber.__dict__[topic]) == TopicHandler
     except KeyError:  # object was not given subscription
         warnings.warn(f"Wrong object sent to note_subscribers. "
                       f"Got {subscriber} which does not have {topic} as an attribute"
@@ -31,10 +31,17 @@ def note_subscribers(topic: str, subscriber: object) -> None:
         warnings.warn(f"It looks like the wrong object was sent to note_subscribers. "
                       f"Got {subscriber} which does not have a __dict__ attribute, so it wasn't even a class instance")
         raise
+    except AssertionError:
+        warnings.warn(f"It looks like the wrong object was sent to note_subscribers. "
+                      f"Got {subscriber}.{topic} which isn't an instance of TopicHandler")
+        raise
     else:
         # create instance as a key, and note that it's subscribed to subscription
-        GLOBAL_SUBSCRIBERS[subscriber] = topic
-        print(f"Added {type(subscriber).__name__} to global_subscribers as subscribing to {topic}")
+        if subscriber not in GLOBAL_SUBSCRIBERS:
+            GLOBAL_SUBSCRIBERS[subscriber] = [topic]
+        else:
+            GLOBAL_SUBSCRIBERS[subscriber].append(topic)
+        print(f"Added {type(subscriber).__name__} to GLOBAL_SUBSCRIBERS as subscribing to {topic}")
 
 
 def on_message(client, userdata, message) -> None:
@@ -51,11 +58,13 @@ def on_message(client, userdata, message) -> None:
     # print("message qos=", message.qos)
     # print("message retain flag=", message.retain)
     # set the attribute of each subscriber that's subscribed to the topic
-    for subscriber, topic in GLOBAL_SUBSCRIBERS.items():
-        if topic == message.topic:
+    for subscriber, topic_list in GLOBAL_SUBSCRIBERS.items():
+        if message.topic in (t_l := topic_list):
             # set the value of the subscriber's attribute in the SubscribedTopic subclass
             # set _value as setting value will attempt to publish
-            setattr(topic_subclass := subscriber.__dict__[topic], "_value", str(message.payload.decode("utf-8")))
+            topic = t_l[t_l.index(message.topic)]
+            setattr(topic_subclass := subscriber.__dict__[topic],
+                    "_value", str(message.payload.decode("utf-8")))
 
             # call the method of that object
             try:
@@ -64,6 +73,7 @@ def on_message(client, userdata, message) -> None:
                 warnings.warn(f"{subscriber}.{topic} "
                               f"didn't have a .called_from_on_message method. "
                               f"Is it not an instance of SubscribedTopic?")
+                raise
 
 
 def on_connect(client, userdata, flags, rc):
@@ -99,13 +109,6 @@ def start_client(message_func=on_message, connect_func=on_connect, broker_arg="1
     client.loop_start()
 
     return client
-
-
-def safe_float(value_arg):
-    try:
-        return float(value_arg)
-    except ValueError:
-        return value_arg
 
 
 class TopicHandler(object):
@@ -177,13 +180,20 @@ class TopicHandler(object):
     def value(self):
         return self._value
 
+    @staticmethod
+    def _safe_float(value_arg):
+        try:
+            return float(value_arg)
+        except ValueError:
+            return value_arg
+
     @property
     def as_float(self):
-        return safe_float(self._value)
+        return self._safe_float(self._value)
 
     @as_float.getter
     def as_float(self):
-        return safe_float(self._value)
+        return self._safe_float(self._value)
 
     def called_from_on_message(self):
         self.on_change()
@@ -207,7 +217,10 @@ class TopicHandler(object):
 
 
 class MQTTConnect(object):
-    def __init__(self, subscriptions=None, publications=None, change_repr=True):
+    def __init__(self, client: mqtt.Client,
+                 subscriptions: Union[list, set, tuple] = None,
+                 publications: Union[list, set, tuple] = None,
+                 change_repr: bool = True):
         """
         Must be used as decorator with arguments. Intended for use on classes.
 
@@ -227,34 +240,40 @@ class MQTTConnect(object):
         :param publications: the topics the object is allowed to publish to
         :param change_repr: normally True, set to False to prevent setting custom __repr__
         """
+        # arg checking
+        assert type(change_repr) == bool, f"Argument change_repr was not of type bool"
+        self.change_repr = change_repr
+
+        assert type(client) == mqtt.Client, f"Argument client was not of type {type(mqtt.Client)}"
+        self.client = client
+
+        # check if subscriptions and publications is what we want
+        self.subscriptions = self._check_pub_sub_arg(subscriptions)  # get an iterable not including a string, or None
+        self.publications = self._check_pub_sub_arg(publications)  # get an iterable not including a string, or None
+
+    @staticmethod
+    def _get_name(string: str) -> str:
+        assert (var_name := string.replace("/", "_")).isidentifier(), f"{var_name} is not a valid variable name."
+        return var_name
+
+    @staticmethod
+    def _check_pub_sub_arg(iterable: Union[list, set, tuple, str]) -> Union[list, None]:
         # check if subscriptions is what we want
         try:
-            if subscriptions is not None:
-                iter(subscriptions)  # check if iterable if not default
+            if iterable is not None:
+                iter(iterable)  # check if iterable if not default
         except TypeError:
-            warnings.warn(f"Iterable was not sent to MQTTConnect subscriptions. Got {subscriptions}")
+            warnings.warn(f"Iterable was not sent to MQTTConnect. Got {iterable}")
             raise
         else:
-            if type(subscriptions) == str:
-                self.subscriptions = [subscriptions]  # handle instance of lone string
-            else:
-                self.subscriptions = subscriptions  # final result: an iterable not including a string, or None
-
-        # check if publications is what we want
-        try:
-            if publications is not None:
-                iter(publications)  # check if iterable if not default
-        except TypeError:
-            warnings.warn(f"Iterable was not sent to MQTTConnect publications. Got {publications}")
-            raise
-        else:
-            if type(publications) == str:
-                self.publications = [publications]  # handle instance of lone string
-            else:
-                self.publications = publications  # final result: an iterable not including a string, or None
-
-        assert type(change_repr) == bool
-        self.change_repr = change_repr
+            # handle instance of lone string
+            iterable_not_str = [iterable] if type(iterable) == str else iterable
+            if iterable_not_str is not None:
+                for string in iterable_not_str:
+                    assert type(string) == str, f"publications and subscriptions arguments needs to consist " \
+                                                f"of only strings. {string} was not a string."
+            return iterable_not_str
+            # final result: an iterable not including a string, or None
 
     # called when decorating a class
     def __call__(self, c):
@@ -263,35 +282,33 @@ class MQTTConnect(object):
         # set classes subscriptions and publications
         c.subscriptions, c.publications = self.subscriptions, self.publications
 
-        old_setattr = c.__setattr__
-
         def setattr_to_publish(c_self, name, value):
-            if name in c_self.__dict__:  # if there's no attribute of this name, set it like normal
-                if type(c_self.__dict__[name]) == TopicHandler:  # but if there is, see if it's a TopicHandler
+            if name in c_self.__dict__:  # if there's an attribute of this name
+                if type(c_self.__dict__[name]) == TopicHandler:  # but if there is, see if it's TopicHandler
                     c_self.__dict__[name].value = value  # if it is, instead of overwriting it, call .value
                     # which will try to publish the message, allowing for easy syntax of "class.Handler = value"
-                else:
-                    old_setattr(c_self, name, value)  # if it's not, set it like normal
-            else:
-                old_setattr(c_self, name, value)
+                    return None
+            old_setattr(c_self, name, value)  # if did not meet previous two if conditions, call old __setattr__ method
 
-        c.__setattr__ = setattr_to_publish
+        old_setattr = c.__setattr__  # retain old __setattr__ method
+        c.__setattr__ = setattr_to_publish  # make new one
 
         def wrapper(*args, **kwargs):
 
             # create better dunder methods
             # create better string representation
             def better_repr(c_self):
-                return f"This is an instance of {type(c_self).__name__}, which was decorated like so:" \
+                n = type(c_self).__name__
+                base = c_self.__class__.__bases__[0].__name__
+                return f"This is an instance of {n}, which was decorated like so:" \
                        f"\n\n" \
                        f"@MQTTConnect(subscriptions={c.subscriptions}, publications={c.publications})\n" \
-                       f"class {type(c_self).__name__}({c_self.__class__.__bases__[0].__name__}):\n" \
+                       f"class {n}({base}):\n" \
                        f"   ..." \
                        f"\n\n" \
-                       f"It was initialized with {type(c_self).__name__}({args, kwargs})"
+                       f"It was initialized with {n}({args, kwargs})"
 
-            if self.change_repr:
-                c.__repr__ = better_repr
+            c.__repr__ = better_repr if self.change_repr else c.__repr__  # write new repr if allowed
 
             # create object
             o = c(*args, **kwargs)
@@ -299,44 +316,30 @@ class MQTTConnect(object):
             # set object attributes
             if o.subscriptions is not None:
                 for subscription in o.subscriptions:
-                    # subscribe to topics
-                    result, mid = GLOBAL_CLIENT.subscribe(subscription)
+                    result, mid = self.client.subscribe(subscription)  # subscribe to topics
 
-                    # make topic instance
-                    var_name = subscription.replace("/", "_")
-                    try:
-                        t = TopicHandler(subscription)
-                        setattr(t, "_parent", type(o).__name__)
-                        setattr(t, "_is_subscribed", True)
+                    var_name = self._get_name(subscription)  # check if replacing / is enough for valid variable name
 
-                        # give object an attribute with name equal to subscription
-                        setattr(o, var_name, t)
-                    except SyntaxError:
-                        warnings.warn(f"{var_name} is not a valid variable name.")
+                    setattr(t := TopicHandler(subscription), "_parent", type(o).__name__)  # make topic instance
+                    setattr(t, "_is_subscribed", True)
+                    setattr(o, var_name, t)  # give object an attribute with name equal to subscription
 
-                    # check success
-                    if result != mqtt.MQTT_ERR_SUCCESS:
+                    if result != mqtt.MQTT_ERR_SUCCESS:  # check subscribe success
                         # warn that subscription wasn't successful
                         warnings.warn(f"Could not subscribe to {subscription}. Message ID: {mid}. Error code {result}")
                     else:
-                        # add class to the global subscriber list on success
-                        note_subscribers(subscription, o)
+                        note_subscribers(subscription, o)  # add class to the global subscriber list on success
 
             if self.publications is not None:
                 for publication in o.publications:
-                    var_name = publication.replace("/", "_")
-                    # don't make a TopicHandler instance if it was already done
-                    if publication in o.subscriptions:
-                        existing_topic_handler = o.__dict__[var_name]
-                        setattr(existing_topic_handler, "_can_publish", True)
-                    else:
-                        # make topic instance
-                        t = TopicHandler(publication)
-                        setattr(t, "_parent", str(o))
-                        setattr(t, "_can_publish", True)
+                    var_name = self._get_name(publication)  # check if replacing / is enough for valid variable name
 
-                        # give object an attribute with name equal to subscription
-                        setattr(o, var_name, t)
+                    if publication in o.subscriptions:  # don't make a new TopicHandler instance if it was already done
+                        setattr(o.__dict__[var_name], "_can_publish", True)
+                    else:
+                        setattr(t := TopicHandler(publication), "_parent", type(o).__name__)  # make topic instance
+                        setattr(t, "_can_publish", True)
+                        setattr(o, var_name, t)  # give object an attribute with name equal to subscription
 
             # standard method name
             try:
@@ -348,11 +351,15 @@ class MQTTConnect(object):
         return wrapper
 
 
-@MQTTConnect(subscriptions=["TEMPERATURE", "NUM_PRESS"], publications=["TEMPERATURE", "AIR_COND/SOUTH"])
+# begin client
+GLOBAL_CLIENT = start_client(message_func=on_message, broker_arg="192.168.0.28", port=1883)
+
+
+@MQTTConnect(GLOBAL_CLIENT, subscriptions=["TEMPERATURE", "NUM_PRESS"], publications=["TEMPERATURE", "AIR_COND/SOUTH"])
 class TemperatureWatcher(object):
     # these help with type completion, and these methods will be added by MQTTConnect
     # Union type hint helps with the expected value that will be sent to or received from the MQTT broker
-    TEMPERATURE: Union[TopicHandler, int]
+    TEMPERATURE: Union[TopicHandler, float]
     AIR_COND_SOUTH: Union[TopicHandler, str]  # slashes are replaced with _
     NUM_PRESS: Union[TopicHandler, float]
 
@@ -378,14 +385,9 @@ class TemperatureWatcher(object):
         else:
             self.AIR_COND_SOUTH = "OFF"
 
-
-# begin client
-GLOBAL_CLIENT = start_client(message_func=on_message, broker_arg="192.168.0.28", port=1883)
-
-
 cloo = TemperatureWatcher(72)
 
-test_val = 60
+test_val = 60.0
 while True:
     time.sleep(1)
     cloo.TEMPERATURE = test_val
