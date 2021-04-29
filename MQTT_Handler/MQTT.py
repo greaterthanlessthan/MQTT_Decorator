@@ -1,4 +1,4 @@
-import paho.mqtt.client as mqtt
+from paho.mqtt.client import MQTT_ERR_SUCCESS, Client as MQTTClient
 from warnings import warn
 from time import time
 
@@ -11,7 +11,7 @@ class Topic(object):
     _value = "NO_MESSAGE_RECEIVED"  # the value of the topic
     _parent: str  # The parent class, used for warnings
     _listed_as_sub_at: dict  # where this class is listed as a subscriber
-    _client: mqtt.Client  # client being used for the instance
+    _client: MQTTClient  # client being used for the instance
 
     # whether or not this can publish, whether or not the instance is a subscriber. Will be set in MQTT_Handler
     _can_publish = _is_subscribed = False
@@ -97,7 +97,7 @@ class Topic(object):
             print(f"{repr(self)} doesn't have permission to publish to topic {self._topic}.")
         else:
             result, mid = self._client.publish(topic=self._topic, payload=payload, qos=qos, retain=retain)
-            if result != mqtt.MQTT_ERR_SUCCESS:
+            if result != MQTT_ERR_SUCCESS:
                 warn(f"Publish message {mid} failed. Error code {result}. Tried to publish "
                      f"{payload} to {self._topic}.")
             return result
@@ -143,7 +143,7 @@ def call_topic_handler(client, userdata, message, sub_dict: dict) -> None:
 
 
 class Connect(object):
-    def __init__(self, client: mqtt.Client,
+    def __init__(self, client: MQTTClient,
                  sub_dict: dict,
                  subscriptions: list = None,
                  publications: list = None
@@ -168,7 +168,7 @@ class Connect(object):
         :param publications: the topics the object is allowed to publish to
         """
         # arg checking
-        assert type(client) == mqtt.Client, f"Argument client was not of type {type(mqtt.Client)}"
+        assert type(client) == MQTTClient, f"Argument client was not of type {type(MQTTClient)}"
         self.client = client
 
         assert type(sub_dict) == dict
@@ -231,7 +231,7 @@ class Connect(object):
 
                     result, mid = self.client.subscribe(sub)  # subscribe to topics
 
-                    if result != mqtt.MQTT_ERR_SUCCESS:  # check subscribe success
+                    if result != MQTT_ERR_SUCCESS:  # check subscribe success
                         # warn that subscription wasn't successful
                         warn(f"Could not subscribe to {sub}. Message ID: {mid}. Error code {result}")
                     else:
