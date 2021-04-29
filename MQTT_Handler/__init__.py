@@ -1,5 +1,9 @@
+__all__ = ["MQTT", "BasicClientStart"]
+
 from .MQTT import call_topic_handler
 from .MQTT import Connect
-from .MQTT import Topic
 
-__all__ = ["MQTT", "BasicClientStart"]
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .MQTT import Topic
